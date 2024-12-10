@@ -1,33 +1,46 @@
-use anyhow::Result;
-use utils::script::create_context;
-
+mod app;
+mod components;
 mod config;
+mod event;
 mod utils;
+
+use std::panic;
+
+use anyhow::Result;
+use app::App;
+use components::{Component, Root};
+use event::{Event, EventHandler};
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut profile = config::profile::Profile::default();
-    let mut remote = config::profile::ProfileRemote::default();
+    // Create terminal
+    let mut terminal = ratatui::init();
+    terminal.clear()?;
 
-    remote.url = "https://abc.xhonor.top:9066/v2b/hx/api/v1/client/subscribe?token=fe39b66ccf9f11d528cf19b04740c075".into();
-    profile.remote = Some(remote);
+    // Set panic hook
+    let panic_hook = panic::take_hook();
+    panic::set_hook(Box::new(move |panic| {
+        ratatui::restore();
+        panic_hook(panic);
+    }));
 
-    profile.update().await?;
-    println!("{:?}", profile);
+    // Create event handler
+    let mut event_handler = EventHandler::new(5);
 
-    let v = profile.read().await?;
-    println!("{:?}", v);
+    // Create root component
+    let mut root = Root::new();
 
-    let j = serde_json::to_string_pretty(&v)?;
-    println!("{}", j);
+    // Run application
+    while *App::get_instance().running.lock().unwrap() {
+        terminal.draw(|frame| root.render(&frame.area(), frame))?;
 
-    let mut ctx = create_context()?;
-    let code = r#"console.log(Object.getOwnPropertyNames(this))"#;
-
-    match ctx.eval(boa_engine::Source::from_bytes(code.as_bytes())) {
-        Ok(v) => println!("{:?}", v),
-        Err(e) => println!("{:?}", e),
+        match event_handler.next().await? {
+            Event::Tick => root.tick().await?,
+            Event::Terminal(ev) => root.handle_event(&ev).await?,
+        }
     }
 
+    // Exit application
+    ratatui::restore();
     Ok(())
 }
